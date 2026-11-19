@@ -1,0 +1,100 @@
+name: Importar sprites 3D Champions
+
+on:
+  workflow_dispatch:
+    inputs:
+      grupo:
+        description: "Escolha uma categoria por execucao"
+        required: true
+        type: choice
+        options:
+          - front
+          - shiny
+          - back
+          - back-shiny
+          - female
+          - female-shiny
+          - female-back
+          - female-back-shiny
+
+permissions:
+  contents: write
+
+concurrency:
+  group: champions-import
+  cancel-in-progress: false
+
+jobs:
+  importar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout do repositorio HeyPikachu
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Definir origem e destino
+        shell: bash
+        env:
+          GROUP: ${{ inputs.grupo }}
+        run: |
+          set -euo pipefail
+          case "$GROUP" in
+            front)             SOURCE=""; DEST="front" ;;
+            shiny)             SOURCE="shiny"; DEST="shiny/front" ;;
+            back)              SOURCE="back"; DEST="back" ;;
+            back-shiny)        SOURCE="back/shiny"; DEST="shiny/back" ;;
+            female)            SOURCE="female"; DEST="female/front" ;;
+            female-shiny)      SOURCE="shiny/female"; DEST="female/shiny/front" ;;
+            female-back)       SOURCE="back/female"; DEST="female/back" ;;
+            female-back-shiny) SOURCE="back/shiny/female"; DEST="female/shiny/back" ;;
+            *) echo "Grupo invalido"; exit 1 ;;
+          esac
+          echo "SOURCE=$SOURCE" >> "$GITHUB_ENV"
+          echo "DEST=$DEST" >> "$GITHUB_ENV"
+
+      - name: Clonar somente os sprites selecionados
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="sprites/pokemon/versions/generation-ix/champions"
+          git clone --depth 1 --filter=blob:none --no-checkout \
+            --branch master https://github.com/PokeAPI/sprites.git /tmp/pokeapi
+          cd /tmp/pokeapi
+          git sparse-checkout init --no-cone
+          if [ -z "$SOURCE" ]; then
+            printf '/%s/*.webp\n' "$ROOT" > .git/info/sparse-checkout
+          else
+            printf '/%s/%s/*.webp\n' "$ROOT" "$SOURCE" > .git/info/sparse-checkout
+          fi
+          git checkout master
+          mkdir -p "$GITHUB_WORKSPACE/$DEST"
+          find "$ROOT/${SOURCE:+$SOURCE/}" -maxdepth 1 -type f -name '*.webp' \
+            -exec cp -t "$GITHUB_WORKSPACE/$DEST" -- {} +
+          echo "Copiados: $(find "$GITHUB_WORKSPACE/$DEST" -maxdepth 1 -name '*.webp' | wc -l)"
+
+      - name: Salvar em lotes no GitHub
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "H!P Bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          count=0
+          commits=0
+          while IFS= read -r -d '' file; do
+            git add -- "$file"
+            count=$((count+1))
+            if (( count % 40 == 0 )); then
+              if ! git diff --cached --quiet; then
+                git commit -m "Importar Champions 3D: $DEST (lote $((commits+1)))"
+                git push
+                commits=$((commits+1))
+              fi
+            fi
+          done < <(find "$DEST" -maxdepth 1 -type f -name '*.webp' -print0 | sort -z)
+          if ! git diff --cached --quiet; then
+            git commit -m "Importar Champions 3D: $DEST (final)"
+            git push
+          fi
+          echo "Categoria importada: $DEST"
